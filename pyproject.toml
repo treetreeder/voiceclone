@@ -29,7 +29,26 @@ dependencies = [
   "sox",
   "onnxruntime",
   "einops",
+
+  # AWS / S3
+  "boto3==1.42.52",
+  "botocore==1.42.52",
+  "s3transfer==0.16.0",
+
+  # Redis / Queue
+  "redis==6.4.0",
+  "bullmq==2.19.5",
+  "msgpack==1.1.2",
+
+  # Utilities
+  "python-dateutil==2.9.0.post0",
+  "python-dotenv==1.2.1",
+  "jmespath==1.1.0",
+  "semver==3.0.4",
+  "six==1.17.0",
+  "urllib3==2.6.3",
 ]
+
 
 [project.urls]
 Homepage = "https://github.com/Qwen/Qwen3-TTS"
