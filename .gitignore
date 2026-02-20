@@ -22,3 +22,6 @@ wheels/
 .vscode/
 venv/
 env/
+hub/
+xet/
+temp_whisper/
