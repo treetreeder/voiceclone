@@ -1,4 +1,6 @@
 import time
+import os
+import tempfile
 import numpy as np
 import torch
 import soundfile as sf
@@ -67,13 +69,12 @@ class TTSProcessor:
         self.ready = True
         log_time(total_start, "✅ TTS Processor is READY")
 
-    def generate(self, ref_audio, ref_text: str, text: str, language: str = "auto"):
+    def generate(self, ref_audio_path: str,ref_text:str, text: str, language: str = "auto"):
         """
-        Generate cloned voice audio from reference audio and text.
+        Generate cloned voice audio from reference audio bytes and text.
 
         Args:
-            ref_audio: Dictionary with keys "array" (numpy array) and "sampling_rate" (int).
-            ref_text: The reference text for voice cloning.
+            ref_audio_bytes: Raw audio file bytes (wav/mp3) downloaded from R2.
             text: The text to synthesize.
             language: Language hint (default: "auto").
 
@@ -83,17 +84,17 @@ class TTSProcessor:
         if not self.ready:
             raise RuntimeError("Model is not loaded yet. Call load_model() first.")
 
-        start = time.time()
+        start = time.time()  # <-- Add this line
         try:
-            # ref_audio is a dict: {"array": numpy_array, "sampling_rate": sr}
             voice_clone_prompt = self.model.create_voice_clone_prompt(
-                ref_audio=ref_audio,
+                ref_audio=ref_audio_path,
                 ref_text=ref_text,
             )
             log_time(start, "Voice clone prompt created")
-        except Exception as e:
-            print(f"❌ Error creating voice clone prompt: {str(e)}")
-            raise e
+        finally:
+            # Clean up temp file
+            if os.path.exists(ref_audio_path):
+                os.remove(ref_audio_path)
 
         # Run generation
         result = self._run_generation(text, language, voice_clone_prompt, label="job")
@@ -127,3 +128,98 @@ class TTSProcessor:
             "rtf": rtf,
             "text": text,
         }
+
+
+
+
+
+
+
+
+
+import asyncio
+import os
+import boto3
+import soundfile as sf
+from dotenv import load_dotenv
+from bullmq import Worker
+from processor import TTSProcessor
+
+load_dotenv()
+
+# ============== R2 & Redis 初始化 ==============
+r2_client = boto3.client(
+    's3', endpoint_url=os.getenv("R2_ENDPOINT"),
+    aws_access_key_id=os.getenv("R2_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
+)
+redis_url = os.getenv("REDIS_URL")
+
+# 加载 TTS 模型 (只在这个进程中加载)
+qwen = TTSProcessor()
+qwen.load_model()
+
+async def process_tts_task(job, job_token):
+    data = job.data
+    print(f"\n[TTS Worker] 🚀 开始处理任务: {job.id}")
+    print(f"数据: data={data}")
+    
+    voice_key = data['key']
+    tts = data.get('tts', '')
+    ref_text = data.get('transcript', '')
+    tts_language = data.get('tts_language', 'auto')
+    
+    try:
+        # 1. 下载参考音频 (因为这是个独立进程，为了安全起见我们再下载/读取一次)
+        temp_dir = "./temp_tts"
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, voice_key.split('/')[-1])
+        
+        if not os.path.exists(temp_path):
+            bucket = os.getenv("R2_BUCKET_NAME")
+            print(f"📥 正在下载参考音频: {voice_key}")
+            with open(temp_path, 'wb') as f:
+                r2_client.download_fileobj(bucket, voice_key, f)
+        
+        # 2. 运行 Qwen3-TTS
+        print(f"🔊 开始生成 TTS语音 ...")
+        result = qwen.generate(
+            ref_audio_path=temp_path,
+            ref_text=ref_text,
+            text=tts,
+            language=tts_language,
+        )
+        
+        # 3. 保存输出音频
+        output_filename = f"output_job_{job.id}.wav"
+        sf.write(output_filename, result["audio"], result["sample_rate"])
+        
+        print(f"✨ 语音生成完毕: {output_filename}")
+        
+        return {
+            "status": "success",
+            "output_file": output_filename,
+            "latency": result.get("total_time", 0)
+        }
+
+    except Exception as e:
+        print(f"❌ TTS 任务 {job.id} 失败: {str(e)}")
+        raise e
+
+async def main():
+    # 注意这里监听的是 tts-queue
+    print(f"\n🤖 TTS Worker 正在监听: clone-queue...")
+    
+    worker = Worker(
+        "clone-queue",
+        process_tts_task,
+        {"connection": redis_url, "concurrency": 1} # 如果显存够大，可以调高并发
+    )
+    
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await worker.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())

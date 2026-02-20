@@ -25,3 +25,4 @@ env/
 hub/
 xet/
 temp_whisper/
+*.wav
