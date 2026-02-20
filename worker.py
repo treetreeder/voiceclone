@@ -30,8 +30,8 @@ except Exception as e:
     r2_client = None
 
 # ============== Load TTS Model Once ==============
-tts = TTSProcessor()
-tts.load_model()
+# tts = TTSProcessor()
+# tts.load_model()
 transcriber = WhisperTranscriber(model_size="turbo")
 
 
@@ -40,64 +40,66 @@ async def process_task(job, job_token):
     print(f"\n--- 🚀 Processing Job {job.id} ---")
     print(f"Data: {data}")
 
-    source_key = data['voice']['key']
+    voice_id=data['voiceId']
+    voice_key = data['key']
     text_to_speak = data.get('inputTranscript', '')
     output_language = data.get('outputLanguage', 'auto')
 
     try:
         # 1. Download reference audio from R2 into memory
-        print(f"📥 Downloading ref audio: {source_key}")
+        print(f"📥 Downloading ref audio: {voice_key}")
         temp_dir = "./temp"
         os.makedirs(temp_dir, exist_ok=True)  # Creates if doesn't exist, does nothing if it does
 
         # Get filename from source key
-        filename = source_key.split('/')[-1]
+        filename = voice_key.split('/')[-1]
         temp_path = os.path.join(temp_dir, filename)
 
         # Download directly to file
         with open(temp_path, 'wb') as f:
-            r2_client.download_fileobj(bucket, source_key, f)
+            r2_client.download_fileobj(bucket, voice_key, f)
 
         print(f"✅ Downloaded to {temp_path}")
-        ref_audio_path = temp_path
-
-
-        speachToText = transcriber.process(ref_audio_path)
-        
+        speachToText = transcriber.process(temp_path)
         print(f"🎤 Transcribed Text: {speachToText['text']}")
-        # 2. Run TTS generation
-        result = {"text": speachToText['text']}
-        result = tts.generate(
-            ref_audio_path=ref_audio_path,
-            ref_text=speachToText['text'],
-            text=text_to_speak,
-            language=output_language,
-        )
-
-        # 3. Save output audio
-        output_filename = f"output_job_{job.id}.wav"
-        sf.write(output_filename, result["audio"], result["sample_rate"])
-
-        print(f"✨ Generated: {output_filename}")
-        print(f"📊 Latency: {result['total_time']:.3f}s | Audio: {result['audio_duration']:.2f}s | RTF: {result['rtf']:.4f}")
-        print(f"✅ Job {job.id} done.")
-
         return {
-            "status": "success",
-            "processed_voice_id": data['voice']['id'],
-            "output_file": output_filename,
-            "audio_duration": result["audio_duration"],
-            "latency": result["total_time"],
+            "transcript": speachToText['text'],
         }
+        
+        # print(f"🎤 Transcribed Text: {speachToText['text']}")
+        # # 2. Run TTS generation
+        # result = {"text": speachToText['text']}
+        # result = tts.generate(
+        #     ref_audio_path=ref_audio_path,
+        #     ref_text=speachToText['text'],
+        #     text=text_to_speak,
+        #     language=output_language,
+        # )
+
+        # # 3. Save output audio
+        # output_filename = f"output_job_{job.id}.wav"
+        # sf.write(output_filename, result["audio"], result["sample_rate"])
+
+        # print(f"✨ Generated: {output_filename}")
+        # print(f"📊 Latency: {result['total_time']:.3f}s | Audio: {result['audio_duration']:.2f}s | RTF: {result['rtf']:.4f}")
+        # print(f"✅ Job {job.id} done.")
+
+        # return {
+        #     "status": "success",
+        #     "processed_voice_id": data['voice']['id'],
+        #     "output_file": output_filename,
+        #     "audio_duration": result["audio_duration"],
+        #     "latency": result["total_time"],
+        # }
 
     except Exception as e:
-        print(f"❌ Failed to process job {job.id} ({source_key}): {str(e)}")
+        print(f"❌ Failed to process job {job.id} ({voice_key}): {str(e)}")
         raise e
 
 
 async def main():
     redis_url = os.getenv("REDIS_URL")
-    queue_name = os.getenv("QUEUE_NAME", "clone-queue")
+    queue_name = os.getenv("QUEUE_NAME", "transcribe-queue")
 
     shutdown_event = asyncio.Event()
 
