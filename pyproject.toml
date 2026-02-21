@@ -29,6 +29,8 @@ dependencies = [
   "sox",
   "onnxruntime",
   "einops",
+  "faster-whisper",
+
 
   # AWS / S3
   "boto3==1.42.52",
