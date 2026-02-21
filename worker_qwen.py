@@ -1,11 +1,13 @@
 import asyncio
 import os
+import time
 import io
 import boto3
 import soundfile as sf
 from dotenv import load_dotenv
 from bullmq import Worker
 from processor import TTSProcessor
+import subprocess
 
 load_dotenv()
 
@@ -18,11 +20,29 @@ r2_client = boto3.client(
 )
 redis_url = os.getenv("REDIS_URL")
 bucket = os.getenv("R2_BUCKET_NAME")
-synthesis_prefix = os.getenv("SYNTHESIS_PREFIX")
+synthesis_prefix = os.getenv("R2_SYNTHESIS_PREFIX")
 
 # 加载 TTS 模型 (只在这个进程中加载)
 qwen = TTSProcessor()
 qwen.load_model()
+
+# ==========================================
+# 获取 GPU 信息
+# ==========================================
+def get_gpu_model():
+    """自动检测 GPU 模型"""
+    try:
+        output = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            text=True,
+            timeout=5
+        ).strip().split('\n')[0]
+        return output
+    except Exception as e:
+        print(f"⚠️ GPU Detection Error: {e}") # This will print the exact reason it failed
+        return os.getenv("WORKER_GPU", "unknown")
+
+GPU_MODEL = get_gpu_model()
 
 async def process_tts_task(job, job_token):
     data = job.data
@@ -49,7 +69,9 @@ async def process_tts_task(job, job_token):
         # 2. Convert stereo to mono if needed
         if len(ref_audio_array.shape) > 1:
             ref_audio_array = ref_audio_array.mean(axis=1)
-
+        
+        start_time = time.perf_counter()
+        
         # 3. Pass as tuple (exactly like warmup code)
         result = qwen.generate(
             ref_audio=(ref_audio_array, ref_sr),  # ✅ Tuple, not dict
@@ -70,16 +92,21 @@ async def process_tts_task(job, job_token):
         
         # 上传到 R2
         
-        r2_key = f"/{synthesis_prefix}/{output_filename}"
+        r2_key = f"{synthesis_prefix}/{output_filename}"
         r2_client.upload_fileobj(audio_bytes, bucket, r2_key)
         
         print(f"✨ 语音生成完毕: {r2_key}")
-        
+        end_time = time.perf_counter()
+        processing_time = end_time - start_time
         return {
-            "key": output_filename,
+            "key": r2_key,
             "duration": duration_seconds,
-            "size": file_size
+            "size": file_size,
+             "processingTime": round(processing_time, 2), 
+             "workerVersion": "qwen-v1",
+              "workerGPU": GPU_MODEL
         }
+
 
     except Exception as e:
         print(f"❌ TTS 任务 {job.id} 失败: {str(e)}")

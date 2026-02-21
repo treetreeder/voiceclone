@@ -8,6 +8,7 @@ import boto3
 import soundfile as sf
 from dotenv import load_dotenv
 from bullmq import Worker, Queue
+import subprocess
 
 load_dotenv()
 
@@ -19,6 +20,27 @@ r2_client = boto3.client(
     aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
 )
 redis_url = os.getenv("REDIS_URL")
+
+
+# ==========================================
+# 获取 GPU 信息
+# ==========================================
+def get_gpu_model():
+    """自动检测 GPU 模型"""
+    try:
+        output = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            text=True,
+            timeout=5
+        ).strip().split('\n')[0]
+        return output
+    except Exception as e:
+        print(f"⚠️ GPU Detection Error: {e}") # This will print the exact reason it failed
+        return os.getenv("WORKER_GPU", "unknown")
+
+GPU_MODEL = get_gpu_model()
+print(f"🎛️  Detected GPU: {GPU_MODEL}")
+
 
 # 初始化 TTS 下一阶段的队列
 tts_queue = Queue("tts-queue", {"connection": redis_url})
@@ -100,11 +122,8 @@ async def process_transcribe_task(job, job_token):
         end_time = time.perf_counter()
         processing_time = end_time - start_time
 
-        print("\n" + "="*50)
-        print(f"处理时间: {processing_time:.2f} 秒")
-        print("="*50)
-        
-        return {"transcript": full_text}
+
+        return {"transcript": full_text, "processingTime": round(processing_time, 2), "workerVersion": "whisper-v1", "workerGPU": GPU_MODEL}
 
     except Exception as e:
         print(f"❌ Whisper 任务 {job.id} 失败: {str(e)}")
