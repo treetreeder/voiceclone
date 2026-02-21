@@ -17,6 +17,8 @@ r2_client = boto3.client(
     aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
 )
 redis_url = os.getenv("REDIS_URL")
+bucket = os.getenv("R2_BUCKET_NAME")
+synthesis_prefix = os.getenv("SYNTHESIS_PREFIX")
 
 # 加载 TTS 模型 (只在这个进程中加载)
 qwen = TTSProcessor()
@@ -34,7 +36,7 @@ async def process_tts_task(job, job_token):
     
     try:
         # 1. 下载参考音频到内存
-        bucket = os.getenv("R2_BUCKET_NAME")
+        
         print(f"📥 正在下载参考音频: {voice_key}")
         
         audio_bytes = io.BytesIO()
@@ -62,19 +64,21 @@ async def process_tts_task(job, job_token):
         # 写入音频到内存缓冲区
         audio_bytes = io.BytesIO()
         sf.write(audio_bytes, result["audio"], result["sample_rate"], format='WAV')
+        file_size = audio_bytes.tell()  
+        duration_seconds = len(result["audio"]) / result["sample_rate"]
         audio_bytes.seek(0)
         
         # 上传到 R2
-        bucket = os.getenv("R2_BUCKET_NAME")
-        r2_key = f"{bucket}/{output_filename}"
+        
+        r2_key = f"/{synthesis_prefix}/{output_filename}"
         r2_client.upload_fileobj(audio_bytes, bucket, r2_key)
         
         print(f"✨ 语音生成完毕: {r2_key}")
         
         return {
-            "status": "success",
-            "output_file": output_filename,
-            "latency": result.get("total_time", 0)
+            "key": output_filename,
+            "duration": duration_seconds,
+            "size": file_size
         }
 
     except Exception as e:
